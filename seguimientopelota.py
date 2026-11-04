@@ -16,9 +16,12 @@ tamanio_lista = 50
 
 dibujar = False
 
+# Extremos del aro seleccionados con el boton derecho
+puntos_aro = []
+
 def selecciona_color(evento, x, y, flags, frame):
 
-    global matiz_objetivo, lista_puntos, dibujar
+    global matiz_objetivo, lista_puntos, dibujar, puntos_aro
 
     if evento == cv2.EVENT_LBUTTONDOWN:
 
@@ -31,6 +34,14 @@ def selecciona_color(evento, x, y, flags, frame):
         dibujar = True
 
         lista_puntos = []
+
+    # Dos clics derechos marcan los extremos del aro
+    elif evento == cv2.EVENT_RBUTTONDOWN:
+
+        if len(puntos_aro) == 2:
+            puntos_aro = []
+
+        puntos_aro.append((x, y))
 
         
 
@@ -88,6 +99,9 @@ while True:
 
         break
 
+    # Volteamos antes de detectar y seleccionar para que coincidan las coordenadas
+    frame = cv2.flip(frame, 1)
+
     contornos = filtra_matiz(frame)
 
     if len(contornos) > 0 and dibujar:
@@ -114,7 +128,12 @@ while True:
 
                 punto_prev = punto
 
-    frame = cv2.flip(frame, 1)
+    # Dibujamos los puntos elegidos para el aro
+    for punto in puntos_aro:
+        cv2.circle(frame, punto, 5, (0, 0, 255), -1)
+
+    if len(puntos_aro) == 2:
+        cv2.line(frame, puntos_aro[0], puntos_aro[1], (0, 0, 255), 3)
 
     cv2.imshow('webcam', frame)
 
