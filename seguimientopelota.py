@@ -12,6 +12,14 @@ dibujar = False
 # Extremos del aro seleccionados con el boton derecho
 puntos_aro = []
 
+# Estado del detector: 0=esperando, 1=paso por arriba, 2=canasta contada
+estado_tiro = 0
+canastas = 0
+posicion_anterior = None
+fotogramas_espera = 0
+fotogramas_fuera = 0
+mensaje_canasta = 0
+
 # Colores de las regiones del aro
 color_aro = (0, 0, 255)
 color_zona_superior = (255, 0, 0)
@@ -19,6 +27,7 @@ color_zona_inferior = (0, 255, 0)
 
 def selecciona_color(evento, x, y, flags, frame):
     global matiz_objetivo, lista_puntos, dibujar, puntos_aro
+    global estado_tiro, posicion_anterior, fotogramas_espera, fotogramas_fuera
 
     if evento == cv2.EVENT_LBUTTONDOWN:
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -26,12 +35,20 @@ def selecciona_color(evento, x, y, flags, frame):
         matiz_objetivo = h[y, x]
         dibujar = True
         lista_puntos = []
+        estado_tiro = 0
+        posicion_anterior = None
+        fotogramas_espera = 0
+        fotogramas_fuera = 0
 
     # Dos clics derechos marcan los extremos del aro
     elif evento == cv2.EVENT_RBUTTONDOWN:
         if len(puntos_aro) == 2:
             puntos_aro = []
         puntos_aro.append((x, y))
+        estado_tiro = 0
+        posicion_anterior = None
+        fotogramas_espera = 0
+        fotogramas_fuera = 0
 
 def selecciona_rango(valor):
     global rango
@@ -123,6 +140,59 @@ def dibuja_regiones_aro(frame, puntos_aro):
 
     return frame
 
+def dentro_zona(centro, zona):
+    x, y = centro
+    x1, y1, x2, y2 = zona
+    return x1 <= x <= x2 and y1 <= y <= y2
+
+def comprueba_canasta(centro, regiones):
+    global estado_tiro, canastas, posicion_anterior
+    global fotogramas_espera, fotogramas_fuera, mensaje_canasta
+
+    if centro is None or regiones is None:
+        # No avanzamos la deteccion si se pierde el balon.
+        posicion_anterior = None
+        if estado_tiro == 1:
+            fotogramas_espera += 1
+            if fotogramas_espera > 20:
+                estado_tiro = 0
+        return
+
+    zona_superior, zona_inferior, _, _ = regiones
+    arriba = dentro_zona(centro, zona_superior)
+    abajo = dentro_zona(centro, zona_inferior)
+
+    # En OpenCV, y aumenta cuando el balon baja.
+    bajando = posicion_anterior is not None and centro[1] > posicion_anterior[1]
+
+    if estado_tiro == 0:
+        if arriba and bajando:
+            estado_tiro = 1
+            fotogramas_espera = 0
+
+    elif estado_tiro == 1:
+        fotogramas_espera += 1
+        if abajo and bajando:
+            canastas += 1
+            mensaje_canasta = 35  # Mostrar el aviso durante 35 fotogramas
+            estado_tiro = 2
+            fotogramas_fuera = 0
+            print('CANASTA! Total:', canastas)
+        elif fotogramas_espera > 20:
+            # Descartamos un paso por arriba que no llega abajo.
+            estado_tiro = 0
+
+    elif estado_tiro == 2:
+        # Evita contar mas de una vez mientras el balon sigue en las zonas.
+        if not arriba and not abajo:
+            fotogramas_fuera += 1
+        else:
+            fotogramas_fuera = 0
+        if fotogramas_fuera >= 5:
+            estado_tiro = 0
+
+    posicion_anterior = centro
+
 cv2.namedWindow('webcam')
 cv2.createTrackbar('Rango', 'webcam', 5, 30, selecciona_rango)
 
@@ -142,6 +212,7 @@ while True:
     frame = cv2.flip(frame, 1)
 
     contornos = filtra_matiz(frame)
+    centro_balon = None
 
     if len(contornos) > 0 and dibujar:
         contorno_max = max(contornos, key=cv2.contourArea)
@@ -149,6 +220,7 @@ while True:
         x = int(x)
         y = int(y)
         radio = int(radio)
+        centro_balon = (x, y)
 
         if len(lista_puntos) >= tamanio_lista:
             lista_puntos.pop(0)
@@ -164,7 +236,19 @@ while True:
                 cv2.line(frame, punto, punto_prev, color, grosor)
                 punto_prev = punto
 
+    alto_frame, ancho_frame = frame.shape[:2]
+    regiones = obten_regiones_aro(puntos_aro, ancho_frame, alto_frame)
+    comprueba_canasta(centro_balon, regiones)
+
     frame = dibuja_regiones_aro(frame, puntos_aro)
+
+    cv2.putText(frame, 'Canastas: ' + str(canastas), (15, 35),
+                cv2.FONT_HERSHEY_COMPLEX, 0.8, (255, 255, 255), 2)
+
+    if mensaje_canasta > 0:
+        cv2.putText(frame, 'CANASTA!', (15, 85),
+                    cv2.FONT_HERSHEY_COMPLEX, 1.1, (0, 255, 0), 3)
+        mensaje_canasta -= 1
 
     cv2.imshow('webcam', frame)
     cv2.setMouseCallback('webcam', selecciona_color, frame)
