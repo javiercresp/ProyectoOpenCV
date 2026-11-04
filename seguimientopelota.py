@@ -1,130 +1,260 @@
 import cv2
-
 import numpy as np
 
 matiz_objetivo = 0
-
 rango = 5
-
 color = (0, 255, 255)
-
 grosor = 4
-
 lista_puntos = []
-
 tamanio_lista = 50
-
 dibujar = False
 
-def selecciona_color(evento, x, y, flags, frame):
+# Extremos del aro seleccionados con el boton derecho
+puntos_aro = []
 
-    global matiz_objetivo, lista_puntos, dibujar
+# Estado del detector: 0=esperando, 1=paso por arriba, 2=canasta contada
+estado_tiro = 0
+canastas = 0
+posicion_anterior = None
+fotogramas_espera = 0
+fotogramas_fuera = 0
+mensaje_canasta = 0
+
+# Colores de las regiones del aro
+color_aro = (0, 0, 255)
+color_zona_superior = (255, 0, 0)
+color_zona_inferior = (0, 255, 0)
+
+def selecciona_color(evento, x, y, flags, frame):
+    global matiz_objetivo, lista_puntos, dibujar, puntos_aro
+    global estado_tiro, posicion_anterior, fotogramas_espera, fotogramas_fuera
 
     if evento == cv2.EVENT_LBUTTONDOWN:
-
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-
         h, s, v = cv2.split(hsv)
-
         matiz_objetivo = h[y, x]
-
         dibujar = True
-
         lista_puntos = []
+        estado_tiro = 0
+        posicion_anterior = None
+        fotogramas_espera = 0
+        fotogramas_fuera = 0
 
-        
+    # Dos clics derechos marcan los extremos del aro
+    elif evento == cv2.EVENT_RBUTTONDOWN:
+        if len(puntos_aro) == 2:
+            puntos_aro = []
+        puntos_aro.append((x, y))
+        estado_tiro = 0
+        posicion_anterior = None
+        fotogramas_espera = 0
+        fotogramas_fuera = 0
 
 def selecciona_rango(valor):
-
     global rango
-
     rango = valor
 
 def filtra_matiz(frame):
-
     frame_suavizado = cv2.blur(frame, (10, 10))
-
     hsv = cv2.cvtColor(frame_suavizado, cv2.COLOR_BGR2HSV)
 
-    color_inferior = np.array([matiz_objetivo - rango,150,0])
-
-    color_superior = np.array([matiz_objetivo + rango,255,255])
+    color_inferior = np.array([matiz_objetivo - rango, 150, 0])
+    color_superior = np.array([matiz_objetivo + rango, 255, 255])
 
     mascara = cv2.inRange(hsv, color_inferior, color_superior)
-
     mascara = cv2.dilate(mascara, None, iterations=4)
 
-    #mascara = cv2.erode(mascara, None, iterations=2)
-
-    res = cv2.bitwise_and(frame,frame, mask=mascara)
-
     contornos, _ = cv2.findContours(mascara, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
-
-    #cv2.imshow('Mascara',mascara)
-
-    #cv2.imshow('Imagen filtrada',res)
-
     return contornos
 
-cv2.namedWindow('webcam')
+def obten_regiones_aro(puntos_aro, ancho_frame, alto_frame):
+    if len(puntos_aro) != 2:
+        return None
 
+    (x1, y1), (x2, y2) = puntos_aro
+
+    x_izq = min(x1, x2)
+    x_der = max(x1, x2)
+    y_aro = int((y1 + y2) / 2)
+
+    ancho_aro = x_der - x_izq
+    if ancho_aro <= 0:
+        return None
+
+    # La altura de cada region depende del ancho del aro
+    altura_zona = max(20, int(ancho_aro * 0.6))
+    margen_lateral = max(10, int(ancho_aro * 0.15))
+
+    x_inicio = max(0, x_izq - margen_lateral)
+    x_fin = min(ancho_frame - 1, x_der + margen_lateral)
+
+    zona_superior = (
+        x_inicio,
+        max(0, y_aro - altura_zona),
+        x_fin,
+        max(0, y_aro)
+    )
+
+    zona_inferior = (
+        x_inicio,
+        min(alto_frame - 1, y_aro),
+        x_fin,
+        min(alto_frame - 1, y_aro + altura_zona)
+    )
+
+    return zona_superior, zona_inferior, (x_izq, y_aro), (x_der, y_aro)
+
+def dibuja_regiones_aro(frame, puntos_aro):
+    alto_frame, ancho_frame = frame.shape[:2]
+    resultado = obten_regiones_aro(puntos_aro, ancho_frame, alto_frame)
+
+    for punto in puntos_aro:
+        cv2.circle(frame, punto, 5, color_aro, -1)
+
+    if resultado is None:
+        return frame
+
+    zona_superior, zona_inferior, punto_izq, punto_der = resultado
+
+    # Dibujar la linea del aro
+    cv2.line(frame, punto_izq, punto_der, color_aro, 3)
+
+    overlay = frame.copy()
+
+    x1s, y1s, x2s, y2s = zona_superior
+    x1i, y1i, x2i, y2i = zona_inferior
+
+    cv2.rectangle(overlay, (x1s, y1s), (x2s, y2s), color_zona_superior, -1)
+    cv2.rectangle(overlay, (x1i, y1i), (x2i, y2i), color_zona_inferior, -1)
+
+    cv2.addWeighted(overlay, 0.20, frame, 0.80, 0, frame)
+
+    cv2.rectangle(frame, (x1s, y1s), (x2s, y2s), color_zona_superior, 2)
+    cv2.rectangle(frame, (x1i, y1i), (x2i, y2i), color_zona_inferior, 2)
+
+    cv2.putText(frame, 'Zona superior', (x1s, max(20, y1s - 8)),
+                cv2.FONT_HERSHEY_COMPLEX, 0.6, color_zona_superior, 1)
+
+    cv2.putText(frame, 'Zona inferior', (x1i, min(alto_frame - 10, y2i + 20)),
+                cv2.FONT_HERSHEY_COMPLEX, 0.6, color_zona_inferior, 1)
+
+    return frame
+
+def dentro_zona(centro, zona):
+    x, y = centro
+    x1, y1, x2, y2 = zona
+    return x1 <= x <= x2 and y1 <= y <= y2
+
+def comprueba_canasta(centro, regiones):
+    global estado_tiro, canastas, posicion_anterior
+    global fotogramas_espera, fotogramas_fuera, mensaje_canasta
+
+    if centro is None or regiones is None:
+        # No avanzamos la deteccion si se pierde el balon.
+        posicion_anterior = None
+        if estado_tiro == 1:
+            fotogramas_espera += 1
+            if fotogramas_espera > 20:
+                estado_tiro = 0
+        return
+
+    zona_superior, zona_inferior, _, _ = regiones
+    arriba = dentro_zona(centro, zona_superior)
+    abajo = dentro_zona(centro, zona_inferior)
+
+    # En OpenCV, y aumenta cuando el balon baja.
+    bajando = posicion_anterior is not None and centro[1] > posicion_anterior[1]
+
+    if estado_tiro == 0:
+        if arriba and bajando:
+            estado_tiro = 1
+            fotogramas_espera = 0
+
+    elif estado_tiro == 1:
+        fotogramas_espera += 1
+        if abajo and bajando:
+            canastas += 1
+            mensaje_canasta = 35  # Mostrar el aviso durante 35 fotogramas
+            estado_tiro = 2
+            fotogramas_fuera = 0
+            print('CANASTA! Total:', canastas)
+        elif fotogramas_espera > 20:
+            # Descartamos un paso por arriba que no llega abajo.
+            estado_tiro = 0
+
+    elif estado_tiro == 2:
+        # Evita contar mas de una vez mientras el balon sigue en las zonas.
+        if not arriba and not abajo:
+            fotogramas_fuera += 1
+        else:
+            fotogramas_fuera = 0
+        if fotogramas_fuera >= 5:
+            estado_tiro = 0
+
+    posicion_anterior = centro
+
+cv2.namedWindow('webcam')
 cv2.createTrackbar('Rango', 'webcam', 5, 30, selecciona_rango)
 
 camara = cv2.VideoCapture(3)
 
 if not camara.isOpened():
-
-    print("No es posible abrir la cámara")
-
+    print('No es posible abrir la camara')
     exit()
 
 while True:
-
     ret, frame = camara.read()
-
     if not ret:
-
-        print("No es posible obtener la imagen")
-
+        print('No es posible obtener la imagen')
         break
 
+    # Volteamos antes de detectar y seleccionar para que coincidan las coordenadas
+    frame = cv2.flip(frame, 1)
+
     contornos = filtra_matiz(frame)
+    centro_balon = None
 
     if len(contornos) > 0 and dibujar:
-
-        contorno_max = max(contornos, key = cv2.contourArea)
-
+        contorno_max = max(contornos, key=cv2.contourArea)
         (x, y), radio = cv2.minEnclosingCircle(contorno_max)
-
         x = int(x)
-
         y = int(y)
+        radio = int(radio)
+        centro_balon = (x, y)
 
-        if len(lista_puntos) >= tamanio_lista : lista_puntos. pop(0)
+        if len(lista_puntos) >= tamanio_lista:
+            lista_puntos.pop(0)
 
         lista_puntos.append((x, y))
 
+        cv2.circle(frame, (x, y), radio, color, 2)
+        cv2.circle(frame, (x, y), 3, color, -1)
+
         if len(lista_puntos) >= 2:
-
             punto_prev = lista_puntos[0]
-
             for punto in lista_puntos:
-
                 cv2.line(frame, punto, punto_prev, color, grosor)
-
                 punto_prev = punto
 
-    frame = cv2.flip(frame, 1)
+    alto_frame, ancho_frame = frame.shape[:2]
+    regiones = obten_regiones_aro(puntos_aro, ancho_frame, alto_frame)
+    comprueba_canasta(centro_balon, regiones)
+
+    frame = dibuja_regiones_aro(frame, puntos_aro)
+
+    cv2.putText(frame, 'Canastas: ' + str(canastas), (15, 35),
+                cv2.FONT_HERSHEY_COMPLEX, 0.8, (255, 255, 255), 2)
+
+    if mensaje_canasta > 0:
+        cv2.putText(frame, 'CANASTA!', (15, 85),
+                    cv2.FONT_HERSHEY_COMPLEX, 1.1, (0, 255, 0), 3)
+        mensaje_canasta -= 1
 
     cv2.imshow('webcam', frame)
-
     cv2.setMouseCallback('webcam', selecciona_color, frame)
 
-    
-
-    if cv2.waitKey(10) == ord('q'): break
+    if cv2.waitKey(10) == ord('q'):
+        break
 
 camara.release()
-
 cv2.destroyAllWindows()
-
