@@ -1,0 +1,22 @@
+
+# Entornos virtuales
+venv/
+.venv/
+id2627virtual/
+
+# Archivos temporales de Python
+__pycache__/
+*.pyc
+
+# Configuración de VS Code
+.vscode/
+
+# Videos de prueba
+videos/
+*.mp4
+*.avi
+*.mov
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
