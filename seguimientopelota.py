@@ -193,10 +193,13 @@ def comprueba_canasta(centro, regiones):
 
     posicion_anterior = centro
 
-cv2.namedWindow('webcam')
+cv2.namedWindow('webcam', cv2.WINDOW_NORMAL)
+cv2.resizeWindow('webcam', 1280, 720)
 cv2.createTrackbar('Rango', 'webcam', 5, 30, selecciona_rango)
 
 camara = cv2.VideoCapture(3)
+camara.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+camara.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
 if not camara.isOpened():
     print('No es posible abrir la camara')
