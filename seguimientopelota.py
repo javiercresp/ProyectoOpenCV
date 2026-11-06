@@ -12,6 +12,12 @@ dibujar = False
 # Extremos del aro seleccionados con el boton derecho
 puntos_aro = []
 
+# Zona de lanzamiento: se elige pulsando Z y despues con dos clics izquierdos
+modo_seleccion_zona = False
+puntos_zona_tiro = []
+zona_tiro = None
+color_zona_tiro = (255, 255, 0)
+
 # Estado del detector: 0=esperando, 1=paso por arriba, 2=canasta contada
 estado_tiro = 0
 canastas = 0
@@ -28,8 +34,19 @@ color_zona_inferior = (0, 255, 0)
 def selecciona_color(evento, x, y, flags, frame):
     global matiz_objetivo, lista_puntos, dibujar, puntos_aro
     global estado_tiro, posicion_anterior, fotogramas_espera, fotogramas_fuera
+    global modo_seleccion_zona, puntos_zona_tiro, zona_tiro
 
-    if evento == cv2.EVENT_LBUTTONDOWN:
+    if evento == cv2.EVENT_LBUTTONDOWN and modo_seleccion_zona:
+        puntos_zona_tiro.append((x, y))
+
+        if len(puntos_zona_tiro) == 2:
+            (x1, y1), (x2, y2) = puntos_zona_tiro
+            zona_tiro = (min(x1, x2), min(y1, y2),
+                         max(x1, x2), max(y1, y2))
+            modo_seleccion_zona = False
+            print('Zona de lanzamiento seleccionada:', zona_tiro)
+
+    elif evento == cv2.EVENT_LBUTTONDOWN:
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         h, s, v = cv2.split(hsv)
         matiz_objetivo = h[y, x]
@@ -140,6 +157,27 @@ def dibuja_regiones_aro(frame, puntos_aro):
 
     return frame
 
+def dibuja_zona_tiro(frame):
+    # Zona de lanzamiento ya seleccionada
+    if zona_tiro is not None:
+        x1, y1, x2, y2 = zona_tiro
+        capa = frame.copy()
+        cv2.rectangle(capa, (x1, y1), (x2, y2), color_zona_tiro, -1)
+        cv2.addWeighted(capa, 0.15, frame, 0.85, 0, frame)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color_zona_tiro, 2)
+        cv2.putText(frame, 'Zona de tiro', (x1, max(20, y1 - 8)),
+                    cv2.FONT_HERSHEY_COMPLEX, 0.6, color_zona_tiro, 2)
+
+    # Mientras se marcan las dos esquinas, mostramos los puntos
+    if modo_seleccion_zona:
+        cv2.putText(frame, 'Selecciona 2 esquinas con clic izquierdo',
+                    (15, 120), cv2.FONT_HERSHEY_COMPLEX, 0.6,
+                    color_zona_tiro, 2)
+        for punto in puntos_zona_tiro:
+            cv2.circle(frame, punto, 5, color_zona_tiro, -1)
+
+    return frame
+
 def dentro_zona(centro, zona):
     x, y = centro
     x1, y1, x2, y2 = zona
@@ -244,6 +282,7 @@ while True:
     comprueba_canasta(centro_balon, regiones)
 
     frame = dibuja_regiones_aro(frame, puntos_aro)
+    frame = dibuja_zona_tiro(frame)
 
     cv2.putText(frame, 'Canastas: ' + str(canastas), (15, 35),
                 cv2.FONT_HERSHEY_COMPLEX, 0.8, (255, 255, 255), 2)
@@ -256,8 +295,14 @@ while True:
     cv2.imshow('webcam', frame)
     cv2.setMouseCallback('webcam', selecciona_color, frame)
 
-    if cv2.waitKey(10) == ord('q'):
+    tecla = cv2.waitKey(10) & 0xFF
+    if tecla == ord('q'):
         break
+    elif tecla == ord('z'):
+        modo_seleccion_zona = True
+        puntos_zona_tiro = []
+        zona_tiro = None  # seleccion sustituye a la anterior
+        print('Marca las dos esquinas de la zona de lanzamiento')
 
 camara.release()
 cv2.destroyAllWindows()
