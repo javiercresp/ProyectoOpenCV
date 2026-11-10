@@ -1,4 +1,4 @@
-# Análisis de tiros de baloncesto con OpenCV 🏀
+# Análisis de tiros de baloncesto con OpenCV 
 
 ## Descripción
 
