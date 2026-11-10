@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import time
 
 matiz_objetivo = 0
 rango = 5
@@ -18,6 +19,17 @@ puntos_zona_tiro = []
 zona_tiro = None
 color_zona_tiro = (255, 255, 0)
 
+# Contador de lanzamientos: primero debe verse el balon dentro de la zona
+# durante varios fotogramas, y luego salir de ella.
+tiros = 0
+fotogramas_dentro = 0
+balon_preparado = False
+intento_activo = False
+fotogramas_perdido = 0
+min_fotogramas_dentro = 3
+max_fotogramas_perdido = 2
+mensaje_tiro = 0
+
 # Estado del detector: 0=esperando, 1=paso por arriba, 2=canasta contada
 estado_tiro = 0
 canastas = 0
@@ -25,6 +37,30 @@ posicion_anterior = None
 fotogramas_espera = 0
 fotogramas_fuera = 0
 mensaje_canasta = 0
+
+# Medidas del lanzamiento: se muestran solo cuando se confirma canasta.
+# Tiempo = desde que sale de la zona de tiro hasta la primera entrada
+# en la zona superior del aro (NO es necesariamente el vuelo completo).
+# Altura = diferencia vertical en pixeles respecto al aro (NO metros).
+inicio_lanzamiento = None
+entrada_zona_superior = None
+y_minima_lanzamiento = None
+ultimo_tiempo = None
+ultima_altura_px = None
+ultimo_numero_tiro = None
+
+def reinicia_medicion():
+    global inicio_lanzamiento, entrada_zona_superior, y_minima_lanzamiento
+    inicio_lanzamiento = None
+    entrada_zona_superior = None
+    y_minima_lanzamiento = None
+
+def actualiza_altura(centro):
+    global y_minima_lanzamiento
+    if not intento_activo or centro is None:
+        return
+    if y_minima_lanzamiento is None or centro[1] < y_minima_lanzamiento:
+        y_minima_lanzamiento = centro[1]
 
 # Colores de las regiones del aro
 color_aro = (0, 0, 255)
@@ -35,6 +71,8 @@ def selecciona_color(evento, x, y, flags, frame):
     global matiz_objetivo, lista_puntos, dibujar, puntos_aro
     global estado_tiro, posicion_anterior, fotogramas_espera, fotogramas_fuera
     global modo_seleccion_zona, puntos_zona_tiro, zona_tiro
+    global fotogramas_dentro, balon_preparado, intento_activo, fotogramas_perdido
+    global ultimo_tiempo, ultima_altura_px, ultimo_numero_tiro
 
     if evento == cv2.EVENT_LBUTTONDOWN and modo_seleccion_zona:
         puntos_zona_tiro.append((x, y))
@@ -44,6 +82,11 @@ def selecciona_color(evento, x, y, flags, frame):
             zona_tiro = (min(x1, x2), min(y1, y2),
                          max(x1, x2), max(y1, y2))
             modo_seleccion_zona = False
+            fotogramas_dentro = 0
+            balon_preparado = False
+            intento_activo = False
+            fotogramas_perdido = 0
+            reinicia_medicion()
             print('Zona de lanzamiento seleccionada:', zona_tiro)
 
     elif evento == cv2.EVENT_LBUTTONDOWN:
@@ -56,6 +99,11 @@ def selecciona_color(evento, x, y, flags, frame):
         posicion_anterior = None
         fotogramas_espera = 0
         fotogramas_fuera = 0
+        fotogramas_dentro = 0
+        balon_preparado = False
+        intento_activo = False
+        fotogramas_perdido = 0
+        reinicia_medicion()
 
     # Dos clics derechos marcan los extremos del aro
     elif evento == cv2.EVENT_RBUTTONDOWN:
@@ -66,6 +114,7 @@ def selecciona_color(evento, x, y, flags, frame):
         posicion_anterior = None
         fotogramas_espera = 0
         fotogramas_fuera = 0
+        reinicia_medicion()
 
 def selecciona_rango(valor):
     global rango
@@ -183,9 +232,66 @@ def dentro_zona(centro, zona):
     x1, y1, x2, y2 = zona
     return x1 <= x <= x2 and y1 <= y <= y2
 
+def comprueba_tiro(centro):
+    global tiros, fotogramas_dentro, balon_preparado
+    global intento_activo, fotogramas_perdido, mensaje_tiro
+    global estado_tiro, posicion_anterior, fotogramas_espera, fotogramas_fuera
+    global inicio_lanzamiento
+
+    if zona_tiro is None:
+        return
+
+    if centro is None:
+        # No contamos una salida si simplemente desaparece la deteccion.
+        fotogramas_perdido += 1
+        if fotogramas_perdido > max_fotogramas_perdido:
+            fotogramas_dentro = 0
+            balon_preparado = False
+        return
+
+    # Si venimos de una perdida larga no asumimos que ha salido de la zona.
+    if fotogramas_perdido > max_fotogramas_perdido:
+        fotogramas_dentro = 0
+        balon_preparado = False
+    fotogramas_perdido = 0
+
+    dentro = dentro_zona(centro, zona_tiro)
+
+    if dentro:
+        fotogramas_dentro += 1
+        if fotogramas_dentro >= min_fotogramas_dentro:
+            balon_preparado = True
+            # Ha vuelto a la zona: ya puede empezar un nuevo lanzamiento.
+            intento_activo = False
+            reinicia_medicion()
+    else:
+        if balon_preparado:
+            tiros += 1
+            mensaje_tiro = 30
+            intento_activo = True
+            reinicia_medicion()
+            inicio_lanzamiento = time.perf_counter()
+            actualiza_altura(centro)
+            # Reiniciar el detector del aro para asociar la siguiente
+            # posible canasta al lanzamiento que acaba de comenzar.
+            estado_tiro = 0
+            posicion_anterior = None
+            fotogramas_espera = 0
+            fotogramas_fuera = 0
+            print('TIRO DETECTADO. Total:', tiros)
+        balon_preparado = False
+        fotogramas_dentro = 0
+
 def comprueba_canasta(centro, regiones):
     global estado_tiro, canastas, posicion_anterior
-    global fotogramas_espera, fotogramas_fuera, mensaje_canasta
+    global fotogramas_espera, fotogramas_fuera, mensaje_canasta, intento_activo
+    global entrada_zona_superior, ultimo_tiempo, ultima_altura_px, ultimo_numero_tiro
+
+    # No se puede sumar una canasta sin un tiro registrado previamente.
+    if not intento_activo:
+        posicion_anterior = None
+        estado_tiro = 0
+        return
 
     if centro is None or regiones is None:
         # No avanzamos la deteccion si se pierde el balon.
@@ -200,7 +306,11 @@ def comprueba_canasta(centro, regiones):
     arriba = dentro_zona(centro, zona_superior)
     abajo = dentro_zona(centro, zona_inferior)
 
-    # En OpenCV, y aumenta cuando el balon baja.
+    # Guardamos el primer contacto con la zona superior tras el tiro.
+    if arriba and entrada_zona_superior is None and inicio_lanzamiento is not None:
+        entrada_zona_superior = time.perf_counter()
+
+    #  aumenta cuando el balon baja.
     bajando = posicion_anterior is not None and centro[1] > posicion_anterior[1]
 
     if estado_tiro == 0:
@@ -211,7 +321,29 @@ def comprueba_canasta(centro, regiones):
     elif estado_tiro == 1:
         fotogramas_espera += 1
         if abajo and bajando:
+            # Solo validamos las medidas cuando se confirma el enceste.
+            _, _, punto_izq, punto_der = regiones
+            y_aro = (punto_izq[1] + punto_der[1]) / 2
+
+            if inicio_lanzamiento is not None and entrada_zona_superior is not None:
+                ultimo_tiempo = entrada_zona_superior - inicio_lanzamiento
+            else:
+                ultimo_tiempo = None
+
+            if y_minima_lanzamiento is not None:
+                ultima_altura_px = y_aro - y_minima_lanzamiento
+            else:
+                ultima_altura_px = None
+
+            ultimo_numero_tiro = tiros
+            print('TIRO', ultimo_numero_tiro,
+                  '| Tiempo hasta zona superior:', 
+                  ('%.2f s' % ultimo_tiempo) if ultimo_tiempo is not None else 'no disponible',
+                  '| Altura sobre aro:',
+                  ('%.0f px' % ultima_altura_px) if ultima_altura_px is not None else 'no disponible')
             canastas += 1
+            intento_activo = False  # Una canasta como maximo por tiro.
+            reinicia_medicion()
             mensaje_canasta = 35  # Mostrar el aviso durante 35 fotogramas
             estado_tiro = 2
             fotogramas_fuera = 0
@@ -279,18 +411,41 @@ while True:
 
     alto_frame, ancho_frame = frame.shape[:2]
     regiones = obten_regiones_aro(puntos_aro, ancho_frame, alto_frame)
+    comprueba_tiro(centro_balon)
+    actualiza_altura(centro_balon)
     comprueba_canasta(centro_balon, regiones)
 
     frame = dibuja_regiones_aro(frame, puntos_aro)
     frame = dibuja_zona_tiro(frame)
 
-    cv2.putText(frame, 'Canastas: ' + str(canastas), (15, 35),
-                cv2.FONT_HERSHEY_COMPLEX, 0.8, (255, 255, 255), 2)
+    porcentaje = 100 * canastas / tiros if tiros > 0 else 0
+    cv2.putText(frame, 'Tiros: ' + str(tiros), (15, 35),
+                cv2.FONT_HERSHEY_COMPLEX, 0.7, (255, 255, 255), 2)
+    cv2.putText(frame, 'Canastas: ' + str(canastas), (15, 65),
+                cv2.FONT_HERSHEY_COMPLEX, 0.7, (255, 255, 255), 2)
+    cv2.putText(frame, 'Acierto: ' + format(porcentaje, '.1f') + '%', (15, 95),
+                cv2.FONT_HERSHEY_COMPLEX, 0.7, (255, 255, 255), 2)
+
+    if mensaje_tiro > 0:
+        cv2.putText(frame, 'TIRO!', (15, 135),
+                    cv2.FONT_HERSHEY_COMPLEX, 0.8, (0, 255, 255), 2)
+        mensaje_tiro -= 1
 
     if mensaje_canasta > 0:
-        cv2.putText(frame, 'CANASTA!', (15, 85),
+        cv2.putText(frame, 'CANASTA!', (15, 175),
                     cv2.FONT_HERSHEY_COMPLEX, 1.1, (0, 255, 0), 3)
         mensaje_canasta -= 1
+
+    # Mostrar las medidas del ultimo tiro que termino en canasta.
+    if ultimo_numero_tiro is not None:
+        cv2.putText(frame, 'Ultima canasta - tiro: ' + str(ultimo_numero_tiro),
+                    (15, 215), cv2.FONT_HERSHEY_COMPLEX, 0.6, (255, 255, 255), 2)
+        texto_tiempo = ('%.2f s' % ultimo_tiempo) if ultimo_tiempo is not None else 'no disponible'
+        texto_altura = ('%.0f px' % ultima_altura_px) if ultima_altura_px is not None else 'no disponible'
+        cv2.putText(frame, 'Tiempo a zona superior: ' + texto_tiempo,
+                    (15, 245), cv2.FONT_HERSHEY_COMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.putText(frame, 'Altura max. sobre aro: ' + texto_altura,
+                    (15, 275), cv2.FONT_HERSHEY_COMPLEX, 0.6, (255, 255, 255), 2)
 
     cv2.imshow('webcam', frame)
     cv2.setMouseCallback('webcam', selecciona_color, frame)
@@ -301,7 +456,13 @@ while True:
     elif tecla == ord('z'):
         modo_seleccion_zona = True
         puntos_zona_tiro = []
-        zona_tiro = None  # seleccion sustituye a la anterior
+        zona_tiro = None  # La siguiente seleccion sustituye a la anterior
+        fotogramas_dentro = 0
+        balon_preparado = False
+        intento_activo = False
+        fotogramas_perdido = 0
+        estado_tiro = 0
+        reinicia_medicion()
         print('Marca las dos esquinas de la zona de lanzamiento')
 
 camara.release()
